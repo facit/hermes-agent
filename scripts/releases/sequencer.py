@@ -6,6 +6,7 @@ IDs before advancing each eligible head oldest-first.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -457,14 +458,16 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
                 docker.promote_stable(record["claim_tag"], record["docker_manifest_digest"], record["tag"])
                 log("Docker aliases moved")
             if "windows-store" in record["lanes"]:
-                log("Checking the Microsoft Store submission")
-                # The Store check joins the pass here (after the feeds and aliases
-                # move). It never releases the held submission: the API cannot,
-                # so it prints the Publish now step. The Store never blocks a
-                # release: a failed or unreadable submission becomes a warning.
+                log("Releasing the Microsoft Store draft")
+                # The Store joins the pass here (after the feeds and aliases move): this
+                # release's draft is committed with auto-publish on. The Store never
+                # blocks a release: a failed or unreadable submission becomes a warning.
                 try:
-                    store.check_from_env(env)
-                except store.StoreError as error:
+                    raw = read_archive(f"releases/tag/{record['claim_tag']}/release-candidates.json")
+                    if hashlib.sha256(raw).hexdigest() != record["candidate_manifest_sha256"]:
+                        raise store.StoreError("the archived candidate manifest differs from the receipt")
+                    store.release_from_env(env, json.loads(raw))
+                except (store.StoreError, ValueError) as error:
                     print(f"::warning title=Microsoft Store::{error}. The release is published; "
                           "upload the Store package from the release run's summary in Partner Center.")
         advance_head = production_advance

@@ -23,9 +23,10 @@ name: Desktop Bundled Release
 #   publish-win32-updater                   → tested canary bytes + feed
 #     (needs BOTH Windows smoke matrices); stable promotion is sequenced by
 #     the stable publication controller after GitHub publication.
-#   stable-store                           → verified Store submission
-#     (needs stable-publish): materialize the immutable accepted Store bundle
-#     and submit via the MSStore CLI without rebuilding.
+#   stable-store                           → verified Store draft
+#     (beside stable-publish): materialize the immutable accepted Store bundle
+#     and upload it via the MSStore CLI without rebuilding; the publication
+#     pass commits it with auto-publish on.
 #   publish-darwin-updater                  → macOS electron-updater feed
 #     (needs BOTH darwin legs): scripts.releases.r2 finalize merges the per-arch
 #     ymls into releases/darwin/<channel>/<channel>-mac.yml — the feed
@@ -2419,9 +2420,9 @@ jobs:
   stable-store:
     name: Submit the verified Store package
     # Runs beside stable-publish: it materializes and digest-checks its own Store candidate
-    # from the admitted manifest and never reads stable-publish's output. The submission is
-    # held (Manual); only "Publish now" in Partner Center puts it live, so a run whose
-    # stable-publish fails leaves an unreleased Store submission, never a live one.
+    # from the admitted manifest and never reads stable-publish's output. It leaves an
+    # uncommitted draft; only the publication pass commits it (auto-publish on), so a run
+    # whose stable-publish fails leaves a draft no customer sees, never a live build.
     needs: [validate]
     if: inputs.release-phase == 'publish' && inputs.skip-store != true
     # The Store is not a release gate: a failed submission leaves the release publishable
@@ -2460,8 +2461,8 @@ jobs:
           files=(verified/Store-*.msixbundle)
           test "${#files[@]}" -eq 1
           test -f "${files[0]}"
-          # Auto-publish stays off: the submission is committed with
-          # targetPublishMode Manual and is released by the publication pass.
+          # An uncommitted draft: the publication pass sets targetPublishMode
+          # Immediate and commits it (scripts/releases/store.py).
           python -m scripts.releases.store submit "${files[0]}"
       - name: Name the Store package for a manual upload
         if: failure()

@@ -588,10 +588,11 @@ def test_a_fresh_flip_advances_the_head_with_the_receipt_it_just_wrote():
     assert releases[0]["tag_name"] == "v0.21.5" and releases[0]["draft"] is False
 
 
-def test_the_store_check_joins_the_pass_after_the_aliases_move(monkeypatch):
+def test_the_store_release_joins_the_pass_after_the_aliases_move(monkeypatch):
     from scripts.releases import channel_releases, docker, sequencer, store
 
-    manifest_digest = hashlib.sha256(b"m").hexdigest()
+    manifest = json.dumps({"files": [{"path": "Store-Product-win.msixbundle"}]}).encode()
+    manifest_digest = hashlib.sha256(manifest).hexdigest()
     _tags, _releases, run = _sequencer_fixture(
         "0.21.5", manifest_digest=manifest_digest, drafts_on_claim_tag=True)
     events = []
@@ -603,20 +604,22 @@ def test_the_store_check_joins_the_pass_after_the_aliases_move(monkeypatch):
     monkeypatch.setattr(
         docker, "promote_stable",
         lambda claim_tag, digest, release_tag: events.append(("aliases", claim_tag, release_tag)))
-    seen_env = []
+    seen = []
     monkeypatch.setattr(
-        store, "check_from_env",
-        lambda env: seen_env.append(env) or events.append(("store",)))
+        store, "release_from_env",
+        lambda env, manifest: seen.append((env, manifest)) or events.append(("store",)))
 
     steps = sequencer.reconcile(
         {"GITHUB_REPOSITORY": "example/project", "MS_STORE_PRODUCT_ID": "9NTEST"},
         run=run, read_head=lambda: head[-1], advance_head=None,
-        read_archive=lambda _key: b"m",
+        read_archive=lambda _key: manifest,
     )
 
     assert steps == [{"advance": "0.21.5"}]
     assert events == [("feed", "0.21.5"), ("aliases", "rc.1-v0.21.5", "v0.21.5"), ("store",)]
-    assert seen_env[0]["MS_STORE_PRODUCT_ID"] == "9NTEST"
+    # The Store releases the draft named by the receipt-bound archived manifest.
+    assert seen[0][0]["MS_STORE_PRODUCT_ID"] == "9NTEST"
+    assert seen[0][1] == json.loads(manifest)
 
 
 def test_a_publish_that_died_before_the_retarget_is_repaired():
@@ -661,7 +664,7 @@ def test_a_release_that_skipped_bundles_ships_only_its_tag_release_and_docker_al
 
     monkeypatch.setattr(channel_releases, "advance_stable",
                         lambda *_args: pytest.fail("the protected R2 head moved"))
-    monkeypatch.setattr(store, "check_from_env", lambda _env: pytest.fail("the Store was checked"))
+    monkeypatch.setattr(store, "release_from_env", lambda *_a: pytest.fail("the Store was released"))
     monkeypatch.setattr(channel_releases, "stable_head_version", lambda _env: "0.21.4")
     monkeypatch.setattr(docker, "promote_stable", promote)
     monkeypatch.setattr(docker, "stable_alias_digest", lambda: alias[0])
@@ -693,7 +696,8 @@ def test_a_partial_desktop_release_moves_only_what_it_built(monkeypatch, lanes, 
     from scripts.releases import channel_releases, docker as docker_module, sequencer, store
 
     docker_digest = "sha256:" + "b" * 64 if docker else None
-    manifest = hashlib.sha256(b"m").hexdigest()
+    archived = json.dumps({"files": [{"path": "Store-Product-win.msixbundle"}]}).encode()
+    manifest = hashlib.sha256(archived).hexdigest()
     _tags, releases, run = _sequencer_fixture(
         "0.21.5", manifest_digest=manifest, docker_digest=docker_digest, lanes=lanes)
     alias = [None]
@@ -705,20 +709,20 @@ def test_a_partial_desktop_release_moves_only_what_it_built(monkeypatch, lanes, 
 
     monkeypatch.setattr(channel_releases, "advance_stable",
                         lambda *_args: pytest.fail("a partial desktop set moved the protected head"))
-    monkeypatch.setattr(store, "check_from_env", lambda _env: events.append(("store",)))
+    monkeypatch.setattr(store, "release_from_env", lambda *_a: events.append(("store",)))
     monkeypatch.setattr(channel_releases, "stable_head_version", lambda _env: "0.21.4")
     monkeypatch.setattr(docker_module, "promote_stable", promote)
     monkeypatch.setattr(docker_module, "stable_alias_digest", lambda: alias[0])
     env = {"GITHUB_REPOSITORY": "example/project", "REQUESTED_VERSION": "0.21.5"}
 
-    steps = sequencer.reconcile(env, run=run, read_archive=lambda _key: b"m")
+    steps = sequencer.reconcile(env, run=run, read_archive=lambda _key: archived)
 
     assert steps == [{"flip": "0.21.5"}, {"advance": "0.21.5"}]
     assert events == ([("aliases", "rc.1-v0.21.5", "v0.21.5")] if docker else []) + \
         ([("store",)] if store_checked else [])
     assert releases[0]["tag_name"] == "v0.21.5" and releases[0]["draft"] is False
     # Finished: the alias carries the receipt's digest, or the release moves no channel at all.
-    assert sequencer.reconcile(env, run=run, read_archive=lambda _key: b"m") == []
+    assert sequencer.reconcile(env, run=run, read_archive=lambda _key: archived) == []
 
 
 def test_the_sequencer_narrates_every_phase_on_stderr_and_keeps_stdout_json(capsys):
