@@ -533,28 +533,6 @@ jobs:
           CHANNEL_REQUEST_SHA256: ${{ needs.validate.outputs.channel-request-sha256 }}
         run: python -m scripts.releases.channel_publish request --out "$RUNNER_TEMP/channel-request.json"
 
-      - name: Resolve the builder toolchain versions
-        id: electron-tools
-        shell: bash
-        run: |
-          node -e '
-            const l = require("./package-lock.json")
-            const eb = l.packages["node_modules/electron-builder"].version
-            if (!eb) process.exit(1)
-            console.log("eb=" + eb)
-          ' >> "$GITHUB_OUTPUT"
-
-      - name: Restore the electron-builder toolchain cache
-        id: electron-tools-restore
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          # winCodeSign kit, ATS dlib, dotnet runtime and rcedit land in
-          # ELECTRON_BUILDER_CACHE; the builder version selects the content.
-          path: ${{ github.workspace }}/.cache/electron-builder
-          key: eb3-${{ runner.os }}-${{ runner.arch }}-builder-${{ steps.electron-tools.outputs.eb }}
-          restore-keys: |
-            eb3-${{ runner.os }}-${{ runner.arch }}-
-
       - name: Restore desktop dependency inputs
         id: build-cache
         uses: ./.github/actions/desktop-build-cache
@@ -590,14 +568,19 @@ jobs:
           producer: desktop
           key: ${{ steps.build-cache.outputs.cache-key }}
 
-      # Commit builds run these steps with a read-only cache token; the
-      # exact-hit-skip semantics of actions/cache keep a read token harmless.
-      - name: Save the electron-builder toolchain
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && inputs.build_commit == '' && inputs.channel == '' }}
+      # Universal-bundle assembly reuses two small slices of this leg's preparation
+      # rather than the multi-GB dependency snapshot: electron-builder's toolset
+      # downloads (winCodeSign kit, ATS dlib, dotnet runtime; preparation points
+      # ELECTRON_BUILDER_CACHE at packager/builder) and npm's content cache.
+      # Commit builds hold a read-only cache token, so their save is skipped here.
+      - name: Save the bundle-assembly caches
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && matrix.target.label == 'win32-x64' && inputs.build_commit == '' && inputs.channel == '' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ github.workspace }}/.cache/electron-builder
-          key: eb3-${{ runner.os }}-${{ runner.arch }}-builder-${{ steps.electron-tools.outputs.eb }}
+          path: |
+            ${{ github.workspace }}/.cache/desktop-inputs/packager/builder
+            ${{ github.workspace }}/.cache/desktop-inputs/npm/_cacache
+          key: win32-assembly-v1-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Restore verified payload signatures
         id: payload-signatures
@@ -934,28 +917,6 @@ jobs:
           CHANNEL_REQUEST_SHA256: ${{ needs.validate.outputs.channel-request-sha256 }}
         run: python -m scripts.releases.channel_publish request --out "$RUNNER_TEMP/channel-request.json"
 
-      - name: Resolve the builder toolchain versions
-        id: electron-tools
-        shell: bash
-        run: |
-          node -e '
-            const l = require("./package-lock.json")
-            const eb = l.packages["node_modules/electron-builder"].version
-            if (!eb) process.exit(1)
-            console.log("eb=" + eb)
-          ' >> "$GITHUB_OUTPUT"
-
-      - name: Restore the electron-builder toolchain cache
-        id: electron-tools-restore
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          # winCodeSign kit, ATS dlib, dotnet runtime and rcedit land in
-          # ELECTRON_BUILDER_CACHE; the builder version selects the content.
-          path: ${{ github.workspace }}/.cache/electron-builder
-          key: eb3-${{ runner.os }}-${{ runner.arch }}-builder-${{ steps.electron-tools.outputs.eb }}
-          restore-keys: |
-            eb3-${{ runner.os }}-${{ runner.arch }}-
-
       - name: Restore desktop dependency inputs
         id: build-cache
         uses: ./.github/actions/desktop-build-cache
@@ -990,15 +951,6 @@ jobs:
           cache: ${{ github.workspace }}/.cache/desktop-inputs
           producer: desktop
           key: ${{ steps.build-cache.outputs.cache-key }}
-
-      # Commit builds run these steps with a read-only cache token; the
-      # exact-hit-skip semantics of actions/cache keep a read token harmless.
-      - name: Save the electron-builder toolchain
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && inputs.build_commit == '' && inputs.channel == '' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ github.workspace }}/.cache/electron-builder
-          key: eb3-${{ runner.os }}-${{ runner.arch }}-builder-${{ steps.electron-tools.outputs.eb }}
 
       # Commit artifacts are downloadable too. Require signing for them,
       # candidates, and published tags before building any payload.
@@ -1524,7 +1476,9 @@ jobs:
       HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
       HERMES_BUILD_COMMIT: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' && needs.validate.outputs.sha || '' }}
       HERMES_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
-      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+      # The paths build-win32-x64 saves its bundle-assembly caches from.
+      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/desktop-inputs/packager/builder
+      npm_config_cache: ${{ github.workspace }}/.cache/desktop-inputs/npm
       CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
       CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
       CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
@@ -1541,11 +1495,12 @@ jobs:
         with:
           # Channel assembly/publishing code stays at the trusted controller.
           ref: ${{ needs.validate.outputs.channel-build != '' && github.sha || needs.validate.outputs.sha }}
-          # stage-msixbundle derives the canary MSIX build number as
-          # minutes-since-the-last-stable from git tags — tag builds must
-          # see them; channel/commit builds derive from the request/env.
-          fetch-depth: ${{ (inputs.build_commit != '' || needs.validate.outputs.channel-build != '') && 1 || 0 }}
-          fetch-tags: ${{ inputs.build_commit == '' && needs.validate.outputs.channel-build == '' }}
+          # Only a stable candidate reads git: its MSIX version is the claim tag's
+          # tagger time, and its receipt step re-checks claim custody (claim tag
+          # object + release-line ancestry). A canary's version is the stamp in its
+          # tag name, and channel/commit builds take theirs from the request/env.
+          fetch-depth: ${{ inputs.release-phase == 'candidate' && 0 || 1 }}
+          fetch-tags: ${{ inputs.release-phase == 'candidate' }}
 
       - name: Retrieve pinned channel request
         if: needs.validate.outputs.channel-build != ''
@@ -1562,40 +1517,26 @@ jobs:
           archive-inputs: ${{ inputs.disposable_run == '' && inputs.disposable_channel == '' }}
           cache-python: false
           save-tools-cache: false
-          save-node-cache: false
+          # npm's cache comes from build-win32-x64 below; nothing ever saves
+          # setup-pm's per-job npm key for this read-only job.
+          cache-node: false
+
+      - name: Restore the bundle-assembly caches
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ github.workspace }}/.cache/desktop-inputs/packager/builder
+            ${{ github.workspace }}/.cache/desktop-inputs/npm/_cacache
+          key: win32-assembly-v1-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            win32-assembly-v1-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}-
+            win32-assembly-v1-${{ runner.arch }}-
 
       - name: Install the locked Windows bundle tooling
         uses: ./.github/actions/retry
         with:
           # No Electron/native postinstalls: only the builder's SDK downloader.
           command: npm ci --workspace apps/desktop --include-workspace-root --include=dev --ignore-scripts --no-audit --no-fund
-
-      - name: Resolve toolchain cache key
-        id: toolchain
-        shell: bash
-        run: |
-          node -e '
-            const l = require("./package-lock.json")
-            const el = l.packages["apps/desktop/node_modules/electron"].version
-            const eb = l.packages["node_modules/electron-builder"].version
-            if (!el || !eb) process.exit(1)
-            console.log("electron=" + el)
-            console.log("builder=" + eb)
-          ' >> "$GITHUB_OUTPUT"
-
-      # Cache reuse is optional. Bundle scripts provision the pinned SDK
-      # and signing dependencies through electron-builder on a cache miss.
-      # This smaller consumer has its own cache, separate from desktop inputs.
-      - name: Restore electron + electron-builder toolchain
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          # ensureWindowsBundleTools resolves the winCodeSign kit, ATS dlib
-          # and dotnet runtime through electron-builder's toolset cache.
-          path: ${{ github.workspace }}/.cache/electron-builder
-          # Saved by the Windows release build legs during preparation.
-          key: eb3-${{ runner.os }}-${{ runner.arch }}-builder-${{ steps.toolchain.outputs.builder }}
-          restore-keys: |
-            eb3-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Retrieve Windows packages from R2
         shell: bash
