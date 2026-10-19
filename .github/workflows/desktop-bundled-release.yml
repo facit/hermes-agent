@@ -270,6 +270,7 @@ jobs:
           # so it can't see the branch that actually carries build_commit.
           # Tag admission runs merge-base against origin/main and needs tags.
           fetch-depth: 0
+          filter: blob:none
           fetch-tags: true
 
       - name: Print the release.py command for this run
@@ -514,6 +515,7 @@ jobs:
         with:
           ref: ${{ needs.validate.outputs.sha }}
           fetch-depth: ${{ (inputs.build_commit != '' || needs.validate.outputs.channel-build != '') && 1 || 0 }}
+          filter: blob:none
           fetch-tags: ${{ inputs.build_commit == '' && needs.validate.outputs.channel-build == '' }}
 
       - name: Check out trusted channel controller
@@ -898,6 +900,7 @@ jobs:
           # Channel/commit builds derive versions from the request/env, not
           # git tags; tag builds need tags for the canary MSIX number.
           fetch-depth: ${{ (inputs.build_commit != '' || needs.validate.outputs.channel-build != '') && 1 || 0 }}
+          filter: blob:none
           fetch-tags: ${{ inputs.build_commit == '' && needs.validate.outputs.channel-build == '' }}
 
       - name: Check out trusted channel controller
@@ -1272,6 +1275,7 @@ jobs:
           ref: ${{ needs.validate.outputs.sha }}
           # Claim custody is re-checked in place: full history and the tags.
           fetch-depth: 0
+          filter: blob:none
           fetch-tags: true
       - uses: ./.github/actions/setup-pm
         with:
@@ -1306,6 +1310,7 @@ jobs:
           ref: ${{ needs.validate.outputs.sha }}
           # Claim custody is re-checked in place: full history and the tags.
           fetch-depth: 0
+          filter: blob:none
           fetch-tags: true
       - uses: ./.github/actions/setup-pm
         with:
@@ -1500,6 +1505,7 @@ jobs:
           # object + release-line ancestry). A canary's version is the stamp in its
           # tag name, and channel/commit builds take theirs from the request/env.
           fetch-depth: ${{ inputs.release-phase == 'candidate' && 0 || 1 }}
+          filter: blob:none
           fetch-tags: ${{ inputs.release-phase == 'candidate' }}
 
       - name: Retrieve pinned channel request
@@ -1684,6 +1690,7 @@ jobs:
           # require_pushed proves commit-build ancestry from local history;
           # a shallow clone fails after main advances past the built SHA.
           fetch-depth: 0
+          filter: blob:none
       - name: Publish tested disposable receiver without promoting T
         if: needs.validate.outputs.receiver-candidate == 'true'
         run: python -m scripts.releases.channel_publish receiver-publish --root "$RUNNER_TEMP/channel-publish"
@@ -1875,6 +1882,7 @@ jobs:
           ref: ${{ needs.validate.outputs.sha }}
           # Commit builds only rev-parse HEAD; tag builds verify ancestry.
           fetch-depth: ${{ inputs.build_commit != '' && 1 || 0 }}
+          filter: blob:none
           fetch-tags: ${{ inputs.build_commit == '' }}
 
       - name: Set up the locked build toolchain
@@ -2335,6 +2343,7 @@ jobs:
           # Runs from the admitted commit so the renderer matches the built bytes.
           ref: ${{ needs.validate.outputs.sha }}
           fetch-depth: 0
+          filter: blob:none
       - name: Render the full expected-binary matrix
         env:
           HERMES_BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
@@ -2367,6 +2376,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          filter: blob:none
       - name: Publish the post-build commit receipt
         env:
           BUILD_COMMIT: ${{ needs.validate.outputs.sha }}
@@ -2554,6 +2564,7 @@ jobs:
         with:
           ref: ${{ needs.validate.outputs.sha }}
           fetch-depth: 0
+          filter: blob:none
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false
